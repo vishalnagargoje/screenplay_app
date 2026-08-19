@@ -34,6 +34,13 @@
   .tab-inactive { border-bottom: 2px solid transparent; color: var(--ink-soft); }
   .pinhole { width: 6px; height: 6px; border-radius: 50%; background: var(--paper); border: 1px solid var(--rule); }
   input:focus, textarea:focus, select:focus { outline: none; box-shadow: 0 0 0 2px rgba(166,56,46,0.25); }
+  .icon-btn { color: var(--ink-soft); }
+  .icon-btn:hover { color: var(--ink); }
+  #ctxMenu { position: fixed; z-index: 50; background: var(--card); border: 1px solid var(--rule); border-radius: 8px; box-shadow: 0 8px 24px rgba(28,27,25,0.18); overflow: hidden; min-width: 180px; }
+  #ctxMenu button { display: block; width: 100%; text-align: left; padding: 8px 14px; font-size: 13px; background: none; border: none; cursor: pointer; color: var(--ink); }
+  #ctxMenu button:hover { background: #F0EEE7; }
+  #ctxMenu .ctx-label { padding: 6px 14px 4px; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-soft); font-family: 'Courier Prime', monospace; }
+  .selectable-text::selection { background: rgba(166,56,46,0.18); }
 </style>
 </head>
 <body class="min-h-screen">
@@ -51,10 +58,12 @@
   </header>
 
   <!-- Tabs -->
-  <nav class="flex gap-6 border-b border-[var(--rule)] mb-6">
-    <button id="tabScenes" class="tab-active pb-3 text-sm font-medium slug uppercase tracking-wide">Scenes</button>
-    <button id="tabCharacters" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide">Characters</button>
-    <button id="tabLocations" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide">Locations</button>
+  <nav class="flex gap-6 border-b border-[var(--rule)] mb-6 overflow-x-auto">
+    <button id="tabScenes" class="tab-active pb-3 text-sm font-medium slug uppercase tracking-wide whitespace-nowrap">Scenes</button>
+    <button id="tabCharacters" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide whitespace-nowrap">Characters</button>
+    <button id="tabLocations" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide whitespace-nowrap">Locations</button>
+    <button id="tabProps" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide whitespace-nowrap">Props</button>
+    <button id="tabVehicles" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide whitespace-nowrap">Vehicles</button>
   </nav>
 
   <!-- Scenes view -->
@@ -64,17 +73,48 @@
 
   <!-- Characters view -->
   <div id="viewCharacters" class="hidden">
+    <div class="text-sm text-[var(--ink-soft)] mb-4">
+      Click the pencil to rename a character. Renaming to a name that already exists (any casing) merges the two.
+      Use "Merge into…" to combine two characters directly without retyping the name.
+    </div>
     <div id="charactersList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
   </div>
 
   <!-- Locations view -->
   <div id="viewLocations" class="hidden">
     <div class="text-sm text-[var(--ink-soft)] mb-4">
-      Rename a location from any scene's expanded view to merge it into another — matching is case-insensitive.
+      Click the pencil to rename a location (updates every scene that uses it). Renaming to an existing name merges
+      the two. Use "Merge into…" to combine two locations directly.
     </div>
     <div id="locationsList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
   </div>
 
+  <!-- Props view -->
+  <div id="viewProps" class="hidden">
+    <div class="text-sm text-[var(--ink-soft)] mb-4">
+      Every prop added across all scenes. Click the pencil to rename (merges into an existing name), or use
+      "Merge into…" to combine two entries directly.
+    </div>
+    <div id="propsList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+  </div>
+
+  <!-- Vehicles view -->
+  <div id="viewVehicles" class="hidden">
+    <div class="text-sm text-[var(--ink-soft)] mb-4">
+      Every vehicle added across all scenes. Click the pencil to rename (merges into an existing name), or use
+      "Merge into…" to combine two entries directly.
+    </div>
+    <div id="vehiclesList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+  </div>
+
+</div>
+
+<!-- Floating context menu for "add selected text to…" -->
+<div id="ctxMenu" class="hidden">
+  <div class="ctx-label">Add selection to…</div>
+  <button data-add-kind="props">Props</button>
+  <button data-add-kind="vehicles">Vehicles</button>
+  <button data-add-kind="costumes">Costumes</button>
 </div>
 
 <script>
@@ -131,6 +171,8 @@ async function init() {
   await loadScenes();
   await loadCharacters();
   await loadLocations();
+  await loadProps();
+  await loadVehicles();
 }
 
 async function loadScenes() {
@@ -215,8 +257,17 @@ function sceneDetailHTML(scene) {
       </form>
     </div>
     <div>
+      <div class="slug text-xs uppercase tracking-wide text-[var(--ink-soft)] mb-1.5">Description</div>
+      <form class="description-edit-form flex gap-2 mb-4" data-scene="${scene.id}">
+        <textarea rows="2" placeholder="Short description of what happens in this scene…"
+          class="text-sm border border-[var(--rule)] rounded px-2 py-1.5 flex-1 bg-white resize-y">${esc(scene.description)}</textarea>
+        <button type="submit" class="text-sm px-3 py-1 rounded bg-[var(--ink)] text-white hover:opacity-90 self-start">Save</button>
+      </form>
+    </div>
+    <div>
       <div class="slug text-xs uppercase tracking-wide text-[var(--ink-soft)] mb-1.5">Scene Text</div>
-      <div class="text-sm whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto bg-white border border-[var(--rule)] rounded p-3">${esc(scene.raw_text) || '<span class="text-[var(--ink-soft)]">No text captured</span>'}</div>
+      <div class="text-xs text-[var(--ink-soft)] mb-1.5">Select text and right-click to add it as a prop, vehicle, or costume.</div>
+      <div id="sceneText-${scene.id}" data-scene="${scene.id}" class="selectable-text text-sm whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto bg-white border border-[var(--rule)] rounded p-3">${esc(scene.raw_text) || '<span class="text-[var(--ink-soft)]">No text captured</span>'}</div>
     </div>
     <div class="grid sm:grid-cols-3 gap-4">
       ${entitySection(scene, "props", "prop_id", "prop_name", scene.props, "Props")}
@@ -250,6 +301,20 @@ function wireDetailEvents(scene) {
       await loadLocations();  // Locations tab counts may have shifted
     });
   }
+  const descForm = detail.querySelector(".description-edit-form");
+  if (descForm) {
+    descForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const description = descForm.querySelector("textarea").value.trim();
+      await api(`/api/scenes/${scene.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      });
+      const idx = SCENES.findIndex(s => s.id == scene.id);
+      if (idx >= 0) SCENES[idx].description = description;
+    });
+  }
   detail.querySelectorAll(".add-form").forEach(form => {
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -263,6 +328,8 @@ function wireDetailEvents(scene) {
         body: JSON.stringify({ name }),
       });
       await refreshScene(scene.id);
+      if (kind === "props") await loadProps();
+      if (kind === "vehicles") await loadVehicles();
     });
   });
   detail.querySelectorAll(".remove-btn").forEach(btn => {
@@ -270,8 +337,14 @@ function wireDetailEvents(scene) {
       const kind = btn.dataset.kind, sceneId = btn.dataset.scene, id = btn.dataset.id;
       await api(`/api/scenes/${sceneId}/${kind}/${id}`, { method: "DELETE" });
       await refreshScene(sceneId);
+      if (kind === "props") await loadProps();
+      if (kind === "vehicles") await loadVehicles();
     });
   });
+  const sceneText = detail.querySelector(`#sceneText-${scene.id}`);
+  if (sceneText) {
+    sceneText.addEventListener("contextmenu", onSceneTextContextMenu);
+  }
 }
 
 async function refreshScene(sceneId) {
@@ -283,51 +356,205 @@ async function refreshScene(sceneId) {
   if (idx >= 0) SCENES[idx] = scene;
 }
 
+// ---------------------------------------------------------------------------
+// Right-click "add selection to props/vehicles/costumes" menu
+// ---------------------------------------------------------------------------
+
+let CTX_SELECTION = { sceneId: null, text: "" };
+
+function onSceneTextContextMenu(e) {
+  const selection = window.getSelection();
+  const text = selection ? selection.toString().trim() : "";
+  if (!text) return; // no selection — let the normal browser context menu show
+  e.preventDefault();
+  CTX_SELECTION = { sceneId: e.currentTarget.dataset.scene, text };
+  const menu = document.getElementById("ctxMenu");
+  menu.style.left = `${e.pageX}px`;
+  menu.style.top = `${e.pageY}px`;
+  menu.classList.remove("hidden");
+}
+
+document.getElementById("ctxMenu").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-add-kind]");
+  if (!btn) return;
+  const kind = btn.dataset.addKind;
+  const { sceneId, text } = CTX_SELECTION;
+  document.getElementById("ctxMenu").classList.add("hidden");
+  if (!sceneId || !text) return;
+  await api(`/api/scenes/${sceneId}/${kind}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: text }),
+  });
+  await refreshScene(sceneId);
+  if (kind === "props") await loadProps();
+  if (kind === "vehicles") await loadVehicles();
+});
+
+document.addEventListener("click", (e) => {
+  const menu = document.getElementById("ctxMenu");
+  if (!menu.classList.contains("hidden") && !menu.contains(e.target)) {
+    menu.classList.add("hidden");
+  }
+});
+document.addEventListener("scroll", () => {
+  document.getElementById("ctxMenu").classList.add("hidden");
+}, true);
+
+// ---------------------------------------------------------------------------
+// Managed lists: Characters / Locations / Props / Vehicles
+// Each supports inline rename (which auto-merges on a name collision) and
+// an explicit "merge into…" picker.
+// ---------------------------------------------------------------------------
+
 async function loadCharacters() {
-  const characters = await api(`/api/characters?script_id=${SCRIPT_ID}`);
-  const container = document.getElementById("charactersList");
-  container.innerHTML = characters.map(c => `
-    <div class="scene-card rounded-lg p-4">
-      <div class="font-semibold">${esc(c.character_name)}</div>
-      <div class="text-xs text-[var(--ink-soft)] mt-1 slug">${c.scene_count} scene${c.scene_count === 1 ? "" : "s"}</div>
-    </div>
-  `).join("");
+  const items = await api(`/api/characters?script_id=${SCRIPT_ID}`);
+  renderManagedList("charactersList", items, {
+    kind: "characters", idField: "character_id", nameField: "character_name",
+    onChange: async () => { await loadCharacters(); await loadScenes(); },
+  });
 }
 
 async function loadLocations() {
-  const locations = await api(`/api/locations?script_id=${SCRIPT_ID}`);
-  const container = document.getElementById("locationsList");
-  container.innerHTML = locations.map(l => `
-    <div class="scene-card rounded-lg p-4">
-      <div class="font-semibold">${esc(l.location_name)}</div>
-      <div class="text-xs text-[var(--ink-soft)] mt-1 slug">${l.scene_count} scene${l.scene_count === 1 ? "" : "s"}</div>
-    </div>
-  `).join("");
+  const items = await api(`/api/locations?script_id=${SCRIPT_ID}`);
+  renderManagedList("locationsList", items, {
+    kind: "locations", idField: "location_id", nameField: "location_name",
+    onChange: async () => { await loadLocations(); await loadScenes(); },
+  });
+}
+
+async function loadProps() {
+  const items = await api(`/api/props?script_id=${SCRIPT_ID}`);
+  renderManagedList("propsList", items, {
+    kind: "props", idField: "prop_id", nameField: "prop_name",
+    onChange: async () => { await loadProps(); },
+  });
+}
+
+async function loadVehicles() {
+  const items = await api(`/api/vehicles?script_id=${SCRIPT_ID}`);
+  renderManagedList("vehiclesList", items, {
+    kind: "vehicles", idField: "vehicle_id", nameField: "vehicle_name",
+    onChange: async () => { await loadVehicles(); },
+  });
+}
+
+function renderManagedList(containerId, items, cfg) {
+  const container = document.getElementById(containerId);
+  const { kind, idField, nameField } = cfg;
+  container.innerHTML = items.map(item => managedCardHTML(item, items, cfg)).join("")
+    || `<div class="text-sm text-[var(--ink-soft)]">Nothing here yet.</div>`;
+
+  items.forEach(item => {
+    const id = item[idField];
+    const card = document.getElementById(`mcard-${kind}-${id}`);
+    if (!card) return;
+
+    const editBtn = card.querySelector(".edit-toggle-btn");
+    const editForm = card.querySelector(".rename-form");
+    const viewRow = card.querySelector(".view-row");
+    if (editBtn && editForm && viewRow) {
+      editBtn.addEventListener("click", () => {
+        viewRow.classList.add("hidden");
+        editForm.classList.remove("hidden");
+        editForm.querySelector("input").focus();
+      });
+      editForm.querySelector(".cancel-edit-btn").addEventListener("click", () => {
+        editForm.classList.add("hidden");
+        viewRow.classList.remove("hidden");
+      });
+      editForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const name = editForm.querySelector("input").value.trim();
+        if (!name) return;
+        await api(`/api/${kind}/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        await cfg.onChange();
+      });
+    }
+
+    const mergeForm = card.querySelector(".merge-form");
+    if (mergeForm) {
+      mergeForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const targetId = mergeForm.querySelector("select").value;
+        if (!targetId) return;
+        await api(`/api/${kind}/${id}/merge/${targetId}`, { method: "POST" });
+        await cfg.onChange();
+      });
+    }
+  });
+}
+
+function managedCardHTML(item, allItems, cfg) {
+  const { kind, idField, nameField } = cfg;
+  const id = item[idField];
+  const name = item[nameField];
+  const sceneCount = item.scene_count ?? 0;
+  const others = allItems.filter(o => o[idField] !== id);
+  const mergeOptions = others.map(o => `<option value="${o[idField]}">${esc(o[nameField])}</option>`).join("");
+
+  return `
+    <div id="mcard-${kind}-${id}" class="scene-card rounded-lg p-4">
+      <div class="view-row flex items-start justify-between gap-2">
+        <div>
+          <div class="font-semibold">${esc(name)}</div>
+          <div class="text-xs text-[var(--ink-soft)] mt-1 slug">${sceneCount} scene${sceneCount === 1 ? "" : "s"}</div>
+        </div>
+        <button class="edit-toggle-btn icon-btn shrink-0" title="Rename">✎</button>
+      </div>
+      <form class="rename-form hidden flex gap-2 mt-2">
+        <input type="text" value="${esc(name)}" class="text-sm border border-[var(--rule)] rounded px-2 py-1 flex-1 bg-white" />
+        <button type="submit" class="text-sm px-2 py-1 rounded bg-[var(--ink)] text-white hover:opacity-90">Save</button>
+        <button type="button" class="cancel-edit-btn text-sm px-2 py-1 rounded border border-[var(--rule)] hover:bg-[#F0EEE7]">Cancel</button>
+      </form>
+      ${others.length ? `
+      <form class="merge-form flex gap-2 mt-2 pt-2 border-t border-[var(--rule)]">
+        <select class="text-sm border border-[var(--rule)] rounded px-2 py-1 flex-1 bg-white">
+          <option value="">Merge into…</option>
+          ${mergeOptions}
+        </select>
+        <button type="submit" class="text-sm px-2 py-1 rounded border border-[var(--pencil)] text-[var(--pencil)] hover:bg-[var(--pencil)] hover:text-white">Merge</button>
+      </form>` : ""}
+    </div>`;
 }
 
 document.getElementById("tabScenes").addEventListener("click", () => {
   setActiveTab("tabScenes");
-  document.getElementById("viewScenes").classList.remove("hidden");
-  document.getElementById("viewCharacters").classList.add("hidden");
-  document.getElementById("viewLocations").classList.add("hidden");
+  showView("viewScenes");
 });
 document.getElementById("tabCharacters").addEventListener("click", () => {
   setActiveTab("tabCharacters");
-  document.getElementById("viewCharacters").classList.remove("hidden");
-  document.getElementById("viewScenes").classList.add("hidden");
-  document.getElementById("viewLocations").classList.add("hidden");
+  showView("viewCharacters");
 });
 document.getElementById("tabLocations").addEventListener("click", () => {
   setActiveTab("tabLocations");
-  document.getElementById("viewLocations").classList.remove("hidden");
-  document.getElementById("viewScenes").classList.add("hidden");
-  document.getElementById("viewCharacters").classList.add("hidden");
+  showView("viewLocations");
+});
+document.getElementById("tabProps").addEventListener("click", () => {
+  setActiveTab("tabProps");
+  showView("viewProps");
+});
+document.getElementById("tabVehicles").addEventListener("click", () => {
+  setActiveTab("tabVehicles");
+  showView("viewVehicles");
 });
 
+const ALL_VIEWS = ["viewScenes", "viewCharacters", "viewLocations", "viewProps", "viewVehicles"];
+function showView(activeId) {
+  ALL_VIEWS.forEach(id => {
+    document.getElementById(id).classList.toggle("hidden", id !== activeId);
+  });
+}
+
+const ALL_TABS = ["tabScenes", "tabCharacters", "tabLocations", "tabProps", "tabVehicles"];
 function setActiveTab(activeId) {
-  ["tabScenes", "tabCharacters", "tabLocations"].forEach(id => {
+  ALL_TABS.forEach(id => {
     document.getElementById(id).className =
-      (id === activeId ? "tab-active" : "tab-inactive") + " pb-3 text-sm font-medium slug uppercase tracking-wide";
+      (id === activeId ? "tab-active" : "tab-inactive") + " pb-3 text-sm font-medium slug uppercase tracking-wide whitespace-nowrap";
   });
 }
 

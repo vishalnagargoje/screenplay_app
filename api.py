@@ -72,6 +72,17 @@ class NamedEntityIn(BaseModel):
     name: str
 
 
+class RenameIn(BaseModel):
+    """Body for PATCH rename endpoints. Renaming an entity to a name that
+    already belongs to a different row of the same kind (case-insensitive)
+    merges the two: every scene linked to the old row is relinked to the
+    existing one and the old row is deleted. This is the same "rename to
+    merge" behavior the location field on a scene already had — extended
+    here to the entities' own management endpoints, and to characters,
+    props, and vehicles too."""
+    name: str
+
+
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
@@ -270,6 +281,67 @@ def create_location(payload: NamedEntityIn):
         session.close()
 
 
+@app.patch("/api/locations/{location_id}")
+def rename_location(location_id: int, payload: RenameIn):
+    """Rename a location directly (affects every scene that uses it, unlike
+    the per-scene location field on PATCH /api/scenes/{id}, which only
+    repoints that one scene). Renaming to a name that matches another
+    location merges the two: every scene pointed at this row is repointed
+    at the existing one, and this row is deleted."""
+    session = SessionLocal()
+    try:
+        loc = session.get(Location, location_id)
+        if not loc:
+            raise HTTPException(404, "Location not found")
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(400, "Name cannot be empty")
+
+        existing = session.query(Location).filter(
+            Location.location_name.ilike(new_name),
+            Location.location_id != location_id,
+        ).first()
+
+        if existing:
+            _merge_locations(session, loc, existing)
+            session.commit()
+            session.refresh(existing)
+            return {"merged": True, "location_id": existing.location_id, "location_name": existing.location_name}
+
+        loc.location_name = new_name
+        session.commit()
+        session.refresh(loc)
+        return {"merged": False, "location_id": loc.location_id, "location_name": loc.location_name}
+    finally:
+        session.close()
+
+
+@app.post("/api/locations/{location_id}/merge/{target_id}")
+def merge_location(location_id: int, target_id: int):
+    if location_id == target_id:
+        raise HTTPException(400, "Cannot merge a location into itself")
+    session = SessionLocal()
+    try:
+        loc = session.get(Location, location_id)
+        target = session.get(Location, target_id)
+        if not loc or not target:
+            raise HTTPException(404, "Location not found")
+        _merge_locations(session, loc, target)
+        session.commit()
+        session.refresh(target)
+        return {"merged": True, "location_id": target.location_id, "location_name": target.location_name}
+    finally:
+        session.close()
+
+
+def _merge_locations(session, source: Location, target: Location):
+    session.query(Scene).filter(Scene.location_id == source.location_id).update(
+        {Scene.location_id: target.location_id}
+    )
+    session.flush()
+    session.delete(source)
+
+
 # ---------------------------------------------------------------------------
 # Characters
 # ---------------------------------------------------------------------------
@@ -324,6 +396,80 @@ def get_character(character_id: int):
         session.close()
 
 
+@app.patch("/api/characters/{character_id}")
+def rename_character(character_id: int, payload: RenameIn):
+    """Rename a character. If the new name matches another character
+    (case-insensitive), the two are merged into that existing character
+    instead: every scene link moves over (a confirmed/speaking link always
+    wins over an auto-detected one for a scene both share), and this row
+    is deleted."""
+    session = SessionLocal()
+    try:
+        entity = session.get(Character, character_id)
+        if not entity:
+            raise HTTPException(404, "Character not found")
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(400, "Name cannot be empty")
+
+        existing = session.query(Character).filter(
+            Character.character_name.ilike(new_name),
+            Character.character_id != character_id,
+        ).first()
+
+        if existing:
+            _merge_characters(session, entity, existing)
+            session.commit()
+            session.refresh(existing)
+            return {"merged": True, "character_id": existing.character_id, "character_name": existing.character_name}
+
+        entity.character_name = new_name
+        session.commit()
+        session.refresh(entity)
+        return {"merged": False, "character_id": entity.character_id, "character_name": entity.character_name}
+    finally:
+        session.close()
+
+
+@app.post("/api/characters/{character_id}/merge/{target_id}")
+def merge_character(character_id: int, target_id: int):
+    """Explicitly merge one character into another by id (no renaming
+    required) — used by the "Merge into…" control in the UI."""
+    if character_id == target_id:
+        raise HTTPException(400, "Cannot merge a character into itself")
+    session = SessionLocal()
+    try:
+        entity = session.get(Character, character_id)
+        target = session.get(Character, target_id)
+        if not entity or not target:
+            raise HTTPException(404, "Character not found")
+        _merge_characters(session, entity, target)
+        session.commit()
+        session.refresh(target)
+        return {"merged": True, "character_id": target.character_id, "character_name": target.character_name}
+    finally:
+        session.close()
+
+
+def _merge_characters(session, source: Character, target: Character):
+    links = session.query(SceneCharacter).filter(SceneCharacter.character_id == source.character_id).all()
+    for link in links:
+        dup = session.get(SceneCharacter, (link.scene_id, target.character_id))
+        if dup:
+            # A scene linked to both: keep the more confident link (confirmed beats auto-detected).
+            if not link.is_auto_detected and dup.is_auto_detected:
+                dup.is_auto_detected = False
+        else:
+            session.add(SceneCharacter(
+                scene_id=link.scene_id,
+                character_id=target.character_id,
+                is_auto_detected=link.is_auto_detected,
+            ))
+        session.delete(link)
+    session.flush()
+    session.delete(source)
+
+
 @app.delete("/api/scenes/{scene_id}/characters/{character_id}")
 def unlink_character(scene_id: int, character_id: int):
     session = SessionLocal()
@@ -372,11 +518,21 @@ def register_entity_routes(kind: str):
     Model, id_field, name_field, LinkModel = cfg["model"], cfg["id_field"], cfg["name_field"], cfg["link_model"]
 
     @app.get(f"/api/{kind}", name=f"list_{kind}")
-    def list_entities():
+    def list_entities(script_id: Optional[int] = None):
         session = SessionLocal()
         try:
             items = session.query(Model).order_by(getattr(Model, name_field)).all()
-            return [{id_field: getattr(i, id_field), name_field: getattr(i, name_field)} for i in items]
+            result = []
+            for i in items:
+                entity_id = getattr(i, id_field)
+                q = session.query(LinkModel).filter(getattr(LinkModel, id_field) == entity_id)
+                if script_id is not None:
+                    q = q.join(Scene).filter(Scene.script_id == script_id)
+                scene_count = q.count()
+                if script_id is not None and scene_count == 0:
+                    continue
+                result.append({id_field: entity_id, name_field: getattr(i, name_field), "scene_count": scene_count})
+            return result
         finally:
             session.close()
 
@@ -432,6 +588,67 @@ def register_entity_routes(kind: str):
             session.delete(link)
             session.commit()
             return {"status": "removed"}
+        finally:
+            session.close()
+
+    def _merge(session, source_id: int, target_id: int):
+        links = session.query(LinkModel).filter(getattr(LinkModel, id_field) == source_id).all()
+        for link in links:
+            dup_key = (link.scene_id, target_id)
+            if not session.get(LinkModel, dup_key):
+                session.add(LinkModel(scene_id=link.scene_id, **{id_field: target_id}))
+            session.delete(link)
+        session.flush()
+        session.delete(session.get(Model, source_id))
+
+    @app.patch(f"/api/{kind}/{{entity_id}}", name=f"rename_{kind}")
+    def rename_entity(entity_id: int, payload: RenameIn):
+        """Rename an item, or merge it into an existing item of the same
+        name (case-insensitive) — every scene using this item is relinked
+        to the existing one and this row is deleted."""
+        session = SessionLocal()
+        try:
+            entity = session.get(Model, entity_id)
+            if not entity:
+                raise HTTPException(404, "Not found")
+            new_name = payload.name.strip()
+            if not new_name:
+                raise HTTPException(400, "Name cannot be empty")
+
+            existing = session.query(Model).filter(
+                getattr(Model, name_field).ilike(new_name),
+                getattr(Model, id_field) != entity_id,
+            ).first()
+
+            if existing:
+                target_id = getattr(existing, id_field)
+                _merge(session, entity_id, target_id)
+                session.commit()
+                session.refresh(existing)
+                return {"merged": True, id_field: target_id, name_field: getattr(existing, name_field)}
+
+            setattr(entity, name_field, new_name)
+            session.commit()
+            session.refresh(entity)
+            return {"merged": False, id_field: entity_id, name_field: getattr(entity, name_field)}
+        finally:
+            session.close()
+
+    @app.post(f"/api/{kind}/{{entity_id}}/merge/{{target_id}}", name=f"merge_{kind}")
+    def merge_entity(entity_id: int, target_id: int):
+        """Explicitly merge one item into another by id."""
+        if entity_id == target_id:
+            raise HTTPException(400, "Cannot merge an item into itself")
+        session = SessionLocal()
+        try:
+            entity = session.get(Model, entity_id)
+            target = session.get(Model, target_id)
+            if not entity or not target:
+                raise HTTPException(404, "Not found")
+            _merge(session, entity_id, target_id)
+            session.commit()
+            session.refresh(target)
+            return {"merged": True, id_field: target_id, name_field: getattr(target, name_field)}
         finally:
             session.close()
 
