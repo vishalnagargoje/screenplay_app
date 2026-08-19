@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Script Breakdown</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAF9F5;
+    --card: #FFFFFF;
+    --ink: #1C1B19;
+    --ink-soft: #6B6659;
+    --rule: #E4E1D8;
+    --pencil: #A6382E;
+    --confirmed: #3F6B4F;
+    --confirmed-bg: #EAF1EC;
+    --auto: #9A7327;
+    --auto-bg: #F6EDDA;
+  }
+  body { background: var(--paper); color: var(--ink); font-family: 'Inter', sans-serif; }
+  .slug { font-family: 'Courier Prime', monospace; }
+  .scene-card { background: var(--card); border: 1px solid var(--rule); transition: box-shadow .15s ease, transform .15s ease; }
+  .scene-card:hover { box-shadow: 0 4px 14px rgba(28,27,25,0.06); }
+  .tag { font-family: 'Courier Prime', monospace; font-size: 11px; letter-spacing: .02em; }
+  .tag-confirmed { background: var(--confirmed-bg); color: var(--confirmed); }
+  .tag-auto { background: var(--auto-bg); color: var(--auto); }
+  .tag-neutral { background: #F0EEE7; color: var(--ink-soft); }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 4px; }
+  .tab-active { border-bottom: 2px solid var(--pencil); color: var(--ink); }
+  .tab-inactive { border-bottom: 2px solid transparent; color: var(--ink-soft); }
+  .pinhole { width: 6px; height: 6px; border-radius: 50%; background: var(--paper); border: 1px solid var(--rule); }
+  input:focus, textarea:focus, select:focus { outline: none; box-shadow: 0 0 0 2px rgba(166,56,46,0.25); }
+</style>
+</head>
+<body class="min-h-screen">
+
+<div id="app" class="max-w-6xl mx-auto px-6 py-10">
+
+  <!-- Header -->
+  <header class="mb-8 flex items-start justify-between">
+    <div>
+      <div class="slug text-xs tracking-widest text-[var(--ink-soft)] uppercase mb-1">Production Breakdown</div>
+      <h1 id="scriptTitle" class="text-3xl font-semibold tracking-tight">Loading…</h1>
+      <div id="scriptMeta" class="text-sm text-[var(--ink-soft)] mt-1"></div>
+    </div>
+    <div id="statPills" class="flex gap-3 text-sm"></div>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="flex gap-6 border-b border-[var(--rule)] mb-6">
+    <button id="tabScenes" class="tab-active pb-3 text-sm font-medium slug uppercase tracking-wide">Scenes</button>
+    <button id="tabCharacters" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide">Characters</button>
+    <button id="tabLocations" class="tab-inactive pb-3 text-sm font-medium slug uppercase tracking-wide">Locations</button>
+  </nav>
+
+  <!-- Scenes view -->
+  <div id="viewScenes">
+    <div id="scenesList" class="space-y-3"></div>
+  </div>
+
+  <!-- Characters view -->
+  <div id="viewCharacters" class="hidden">
+    <div id="charactersList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+  </div>
+
+  <!-- Locations view -->
+  <div id="viewLocations" class="hidden">
+    <div class="text-sm text-[var(--ink-soft)] mb-4">
+      Rename a location from any scene's expanded view to merge it into another — matching is case-insensitive.
+    </div>
+    <div id="locationsList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"></div>
+  </div>
+
+</div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+let SCRIPT_ID = null;
+let SCENES = [];
+
+async function api(path, opts) {
+  const res = await fetch(API + path, opts);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status} ${path}: ${body}`);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+function esc(s) {
+  return (s ?? "").toString().replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function formatLength(n) {
+  if (n === null || n === undefined) return "—";
+  const eighths = Math.round(n * 8);
+  const whole = Math.floor(eighths / 8);
+  const rem = eighths % 8;
+  if (rem === 0) return `${whole || 0} pg`;
+  return `${whole ? whole + " " : ""}${rem}/8 pg`;
+}
+
+async function init() {
+  const scripts = await api("/api/scripts");
+  if (!scripts.length) {
+    document.getElementById("scriptTitle").textContent = "No script imported yet";
+    document.getElementById("scriptMeta").textContent =
+      "Run import_fdx.py then parse_and_store.py from the command line, then reload this page.";
+    return;
+  }
+  const script = scripts[scripts.length - 1]; // most recently imported
+  SCRIPT_ID = script.id;
+  document.getElementById("scriptTitle").textContent = script.title;
+  document.getElementById("scriptMeta").textContent =
+    `${script.source_filename || ""} · imported ${script.imported_at ? new Date(script.imported_at).toLocaleString() : ""}`;
+
+  const characters = await api(`/api/characters?script_id=${SCRIPT_ID}`);
+  document.getElementById("statPills").innerHTML = `
+    <div class="px-3 py-1.5 rounded-full border border-[var(--rule)] bg-white">
+      <span class="font-semibold">${script.scene_count}</span> scenes
+    </div>
+    <div class="px-3 py-1.5 rounded-full border border-[var(--rule)] bg-white">
+      <span class="font-semibold">${characters.length}</span> characters
+    </div>
+  `;
+
+  await loadScenes();
+  await loadCharacters();
+  await loadLocations();
+}
+
+async function loadScenes() {
+  SCENES = await api(`/api/scenes?script_id=${SCRIPT_ID}`);
+  const container = document.getElementById("scenesList");
+  container.innerHTML = SCENES.map(sceneCardHTML).join("");
+  SCENES.forEach(s => {
+    document.getElementById(`toggle-${s.id}`).addEventListener("click", () => toggleScene(s.id));
+  });
+}
+
+function sceneCardHTML(s) {
+  const charChips = s.characters.map(c => `
+    <span class="tag inline-flex items-center gap-1 px-2 py-0.5 rounded ${c.is_auto_detected ? 'tag-auto' : 'tag-confirmed'}">
+      ${esc(c.character_name)}${c.is_auto_detected ? ' <span title="Detected from action text — unconfirmed">*</span>' : ''}
+    </span>
+  `).join(" ");
+
+  return `
+  <div class="scene-card rounded-lg overflow-hidden">
+    <button id="toggle-${s.id}" class="w-full text-left px-5 py-4 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-4 min-w-0">
+        <div class="pinhole hidden sm:block"></div>
+        <span class="slug text-xs text-[var(--ink-soft)] w-8 shrink-0">#${esc(s.scene_number)}</span>
+        <span class="slug text-sm font-bold shrink-0">${esc(s.ext_int)}</span>
+        <span class="truncate font-medium">${esc(s.location_name)}</span>
+        <span class="slug text-xs text-[var(--ink-soft)] shrink-0">${esc(s.time_of_day)}</span>
+      </div>
+      <div class="flex items-center gap-3 shrink-0">
+        <span class="text-xs text-[var(--ink-soft)] slug">${formatLength(s.page_length)}</span>
+        <span class="text-[var(--ink-soft)]" id="chev-${s.id}">▾</span>
+      </div>
+    </button>
+    <div class="px-5 pb-2 flex flex-wrap gap-1.5">${charChips || '<span class="text-xs text-[var(--ink-soft)]">No characters detected</span>'}</div>
+    <div id="detail-${s.id}" class="hidden border-t border-[var(--rule)] px-5 py-4 space-y-4 bg-[#FCFBF8]"></div>
+  </div>`;
+}
+
+async function toggleScene(sceneId) {
+  const detail = document.getElementById(`detail-${sceneId}`);
+  const chev = document.getElementById(`chev-${sceneId}`);
+  if (!detail.classList.contains("hidden")) {
+    detail.classList.add("hidden");
+    chev.textContent = "▾";
+    return;
+  }
+  chev.textContent = "▴";
+  detail.classList.remove("hidden");
+  detail.innerHTML = `<div class="text-sm text-[var(--ink-soft)]">Loading…</div>`;
+  const scene = await api(`/api/scenes/${sceneId}`);
+  detail.innerHTML = sceneDetailHTML(scene);
+  wireDetailEvents(scene);
+}
+
+function entitySection(scene, kind, idField, nameField, items, addLabel) {
+  const chips = items.map(item => `
+    <span class="tag inline-flex items-center gap-1.5 px-2 py-1 rounded tag-neutral">
+      ${esc(item[nameField])}
+      <button class="remove-btn text-[var(--pencil)] hover:opacity-70" data-kind="${kind}" data-scene="${scene.id}" data-id="${item[idField]}">✕</button>
+    </span>
+  `).join(" ");
+  return `
+    <div>
+      <div class="slug text-xs uppercase tracking-wide text-[var(--ink-soft)] mb-1.5">${addLabel}</div>
+      <div class="flex flex-wrap gap-1.5 mb-2">${chips || '<span class="text-xs text-[var(--ink-soft)]">None yet</span>'}</div>
+      <form class="add-form flex gap-2" data-kind="${kind}" data-scene="${scene.id}">
+        <input type="text" placeholder="Add ${addLabel.toLowerCase()}…"
+          class="text-sm border border-[var(--rule)] rounded px-2 py-1 flex-1 bg-white" />
+        <button type="submit" class="text-sm px-3 py-1 rounded bg-[var(--ink)] text-white hover:opacity-90">Add</button>
+      </form>
+    </div>`;
+}
+
+function sceneDetailHTML(scene) {
+  return `
+    <div>
+      <div class="slug text-xs uppercase tracking-wide text-[var(--ink-soft)] mb-1.5">Location</div>
+      <form class="location-edit-form flex gap-2 mb-4" data-scene="${scene.id}">
+        <input type="text" value="${esc(scene.location_name)}"
+          class="text-sm border border-[var(--rule)] rounded px-2 py-1 flex-1 bg-white" />
+        <button type="submit" class="text-sm px-3 py-1 rounded bg-[var(--ink)] text-white hover:opacity-90">Save</button>
+      </form>
+    </div>
+    <div>
+      <div class="slug text-xs uppercase tracking-wide text-[var(--ink-soft)] mb-1.5">Scene Text</div>
+      <div class="text-sm whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto bg-white border border-[var(--rule)] rounded p-3">${esc(scene.raw_text) || '<span class="text-[var(--ink-soft)]">No text captured</span>'}</div>
+    </div>
+    <div class="grid sm:grid-cols-3 gap-4">
+      ${entitySection(scene, "props", "prop_id", "prop_name", scene.props, "Props")}
+      ${entitySection(scene, "vehicles", "vehicle_id", "vehicle_name", scene.vehicles, "Vehicles")}
+      ${entitySection(scene, "costumes", "costume_id", "costume_name", scene.costumes, "Costumes")}
+    </div>
+  `;
+}
+
+function wireDetailEvents(scene) {
+  const detail = document.getElementById(`detail-${scene.id}`);
+  const locForm = detail.querySelector(".location-edit-form");
+  if (locForm) {
+    locForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = locForm.querySelector("input").value.trim();
+      if (!name) return;
+      const updated = await api(`/api/scenes/${scene.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location: name }),
+      });
+      // Update the collapsed card's location label without collapsing the open panel.
+      const card = document.getElementById(`toggle-${scene.id}`);
+      if (card) {
+        const label = card.querySelector(".truncate");
+        if (label) label.textContent = updated.location_name;
+      }
+      const idx = SCENES.findIndex(s => s.id == scene.id);
+      if (idx >= 0) SCENES[idx].location_name = updated.location_name;
+      await loadLocations();  // Locations tab counts may have shifted
+    });
+  }
+  detail.querySelectorAll(".add-form").forEach(form => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = form.querySelector("input");
+      const name = input.value.trim();
+      if (!name) return;
+      const kind = form.dataset.kind;
+      await api(`/api/scenes/${scene.id}/${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      await refreshScene(scene.id);
+    });
+  });
+  detail.querySelectorAll(".remove-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const kind = btn.dataset.kind, sceneId = btn.dataset.scene, id = btn.dataset.id;
+      await api(`/api/scenes/${sceneId}/${kind}/${id}`, { method: "DELETE" });
+      await refreshScene(sceneId);
+    });
+  });
+}
+
+async function refreshScene(sceneId) {
+  const scene = await api(`/api/scenes/${sceneId}`);
+  document.getElementById(`detail-${sceneId}`).innerHTML = sceneDetailHTML(scene);
+  wireDetailEvents(scene);
+  // also refresh the collapsed chip row + master list cache
+  const idx = SCENES.findIndex(s => s.id == sceneId);
+  if (idx >= 0) SCENES[idx] = scene;
+}
+
+async function loadCharacters() {
+  const characters = await api(`/api/characters?script_id=${SCRIPT_ID}`);
+  const container = document.getElementById("charactersList");
+  container.innerHTML = characters.map(c => `
+    <div class="scene-card rounded-lg p-4">
+      <div class="font-semibold">${esc(c.character_name)}</div>
+      <div class="text-xs text-[var(--ink-soft)] mt-1 slug">${c.scene_count} scene${c.scene_count === 1 ? "" : "s"}</div>
+    </div>
+  `).join("");
+}
+
+async function loadLocations() {
+  const locations = await api(`/api/locations?script_id=${SCRIPT_ID}`);
+  const container = document.getElementById("locationsList");
+  container.innerHTML = locations.map(l => `
+    <div class="scene-card rounded-lg p-4">
+      <div class="font-semibold">${esc(l.location_name)}</div>
+      <div class="text-xs text-[var(--ink-soft)] mt-1 slug">${l.scene_count} scene${l.scene_count === 1 ? "" : "s"}</div>
+    </div>
+  `).join("");
+}
+
+document.getElementById("tabScenes").addEventListener("click", () => {
+  setActiveTab("tabScenes");
+  document.getElementById("viewScenes").classList.remove("hidden");
+  document.getElementById("viewCharacters").classList.add("hidden");
+  document.getElementById("viewLocations").classList.add("hidden");
+});
+document.getElementById("tabCharacters").addEventListener("click", () => {
+  setActiveTab("tabCharacters");
+  document.getElementById("viewCharacters").classList.remove("hidden");
+  document.getElementById("viewScenes").classList.add("hidden");
+  document.getElementById("viewLocations").classList.add("hidden");
+});
+document.getElementById("tabLocations").addEventListener("click", () => {
+  setActiveTab("tabLocations");
+  document.getElementById("viewLocations").classList.remove("hidden");
+  document.getElementById("viewScenes").classList.add("hidden");
+  document.getElementById("viewCharacters").classList.add("hidden");
+});
+
+function setActiveTab(activeId) {
+  ["tabScenes", "tabCharacters", "tabLocations"].forEach(id => {
+    document.getElementById(id).className =
+      (id === activeId ? "tab-active" : "tab-inactive") + " pb-3 text-sm font-medium slug uppercase tracking-wide";
+  });
+}
+
+init().catch(err => {
+  document.getElementById("scriptTitle").textContent = "Could not reach the API";
+  document.getElementById("scriptMeta").textContent = "Is api.py running on http://127.0.0.1:8000 ? " + err.message;
+});
+</script>
+
+</body>
+</html>
